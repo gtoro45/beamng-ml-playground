@@ -58,7 +58,7 @@ vehicle.ai.set_mode('traffic')
 
 
 ################################## CAPTURE FUNCTIONS ###################################
-WRITE_QUEUE = queue.Queue
+WRITE_QUEUE = queue.Queue()
 
 # find the window coordinates of BeamNG Drive
 def get_beamng_window():
