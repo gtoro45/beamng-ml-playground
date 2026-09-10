@@ -9,14 +9,18 @@ import itertools
 
 import queue
 import threading
-import csv
 import argparse
+import numpy as np
+import pickle
 
 # Force the socket handshake string to match the game engine's expected version
 bng_conn.Connection.PROTOCOL_VERSION = 'v1.26'
 
 ################################## PARSE CLI ARGS ##################################
-
+parser = argparse.ArgumentParser()
+parser.add_argument('--dims', nargs=2, type=int, help="Dimensions of the captured image for model input (tuple)")
+args = parser.parse_args()
+DIMS = args.dims
 
 ################################## SETUP CODE ##################################
 BEAMNG_DRIVE_PATH=r"H:\Games Library\Steam Library\steamapps\common\BeamNG.drive"
@@ -28,6 +32,7 @@ bng = BeamNGpy(
     home=BEAMNG_DRIVE_PATH
 )
 bng.open()
+bng.hide_hud()
 
 # create a scenario
 scenario = Scenario('west_coast_usa', 'example')
@@ -78,34 +83,70 @@ def capture_data(sct: mss.MSS, bbox: dict, vehicle: Vehicle, frame_no: int):
     
     # capture image
     sct_img = sct.grab(bbox)
-    img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
     
     # write to queue
-    WRITE_QUEUE.put(item=(steering, throttle, brake, speed, img, frame_no))
+    WRITE_QUEUE.put(item=(steering, throttle, brake, speed, sct_img, frame_no))
 
 # read from thread-safe queue to handle IO tasks separately
 def writer_thread():
+    data_list = []
+    labels_list = []
+    
+    # consumer loop
     while True:
         # get and validate entry
         entry = WRITE_QUEUE.get()
-        if entry is None: 
-            break
+        if entry is None: break
+        steering, throttle, brake, speed, sct_img, frame_no = entry
         
-        # downscale image based on CLI args
-        # TODO
+        # Convert and downscale image based on CLI args
+        img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
+        res = img.resize(DIMS)
         
-        # write to disk
+        # Match CIFAR dataset structure (H, W, 3) --> (3, H, W) --> flatten to 1D
+        img_arr = np.array(res, dtype=np.uint8)         # (H, W, 3) (original)
+        img_planar = np.transpose(img_arr, (2, 0, 1))   # (3, H, W) (cifar)
+        flat_img = img_planar.flatten()                 # flatten to shape 3 * H * W
+        
+        # multi-dimensional telemetry labels
+        label_vec = np.array([steering, throttle, brake, speed], dtype=np.float32)
+        
+        # write to parallel data and label lists
+        data_list.append(flat_img)
+        labels_list.append(label_vec)
+        WRITE_QUEUE.task_done()     # thread safety
+    
+    # consolidate and write dataset to disk
+    if data_list:
+        dataset = {
+            b'data': np.vstack(data_list),       # shape: (N, 3 * H * W)
+            b'labels': np.vstack(labels_list),   # shape: (N, 4)
+            b'dims': DIMS                        # metadata: (width, height)
+        }
+        
+        output_path = "beamng_dataset.pkl"
+        with open(output_path, 'wb') as file:
+            pickle.dump(dataset, file, protocol=pickle.HIGHEST_PROTOCOL)
+        print(f"Successfully saved {len(data_list)} frames to {output_path}")
         
 ################################## CAPTURE LOOP ##################################
-SIM_TICKS = 6   # define the tickrate
+# Sim runs deterministically at 60 physics steps (ticks) per in-game second.
+# Stepping SIM_TICKS = 6 advances in-game time by 6 / 60 = 0.10 seconds per loop.
+# Capturing once per step yields 60 / SIM_TICKS = 10 captures per in-game second (10 Hz).
+SIM_TICKS = 6
 
 sct = mss.MSS()                 # capture library for computer vision
 bng_win = get_beamng_window()   # beamng window
-bbox = {                        # the bounding box for the current BeamNG window (assumes no movement)
-    "top": bng_win.top,
-    "left": bng_win.left,
-    "width": bng_win.width,
-    "height": bng_win.height,
+
+# Define the square size (e.g., 650x650 pixels works well for a 1080p window)
+crop_dim = int(bng_win.height * 0.60)  # ~648 pixels
+bbox = {
+    # Starts above the car to capture the road ahead down through the lane markers
+    "top": int(bng_win.top + bng_win.height * 0.28),
+    # Symmetrically centered on the car (center line is bng_win.left + bng_win.width * 0.5)
+    "left": int(bng_win.left + (bng_win.width / 2) - (crop_dim / 2)),
+    "width": crop_dim,
+    "height": crop_dim,
 }
 
 # spin up the writer thread
@@ -116,11 +157,9 @@ writer.start()
 print("Hit enter when done...")
 try:
     for frame in itertools.count():
-        # advance simulation by SIM_TICKS steps
-        bng.control.step(SIM_TICKS)
-        
-        # capture data
-        capture_data(sct, bbox, vehicle, frame)
+        bng.control.step(SIM_TICKS)             # step simuilation forward
+        if frame < 30: continue                 # allow rendering to warm up before collection (30 frames = 3 seconds @ 60FPS with SIM_TICKS = 6)
+        capture_data(sct, bbox, vehicle, frame) # capture data
         
 except KeyboardInterrupt:
     print("Ending Capture")
