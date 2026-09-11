@@ -1,8 +1,11 @@
 # LeNet model for image classification. This model is derived from the standard
-# architecture implemented here:
+# architecture implemented here: []
 # The model in this file was modified from the original to serve a driving model
 # for BeamNG.drive, which requires multiple outputs rather than a single softmax
-# selection. These outputs are 
+# selection. Thse outputs are [steering, throttle, brake]. 
+# This model does not solve a classification problem, so Cross Entropy Loss is discarded
+# in favor of MSE/SmoothL1 Loss
+# TODO: cleanup model.model junk --> merge both classes
 
 
 import torch
@@ -206,17 +209,24 @@ class LeNet(nn.Module):
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class LeNet_Cifar10(nn.Module):    
-    def __init__(self, batch_norm=True, dropout=True):
+    def __init__(self, criterion=nn.MSELoss(), batch_norm=True, dropout=True):
         # Modifications:
         # (1) remove all n_classes instances
+        # (2) switch to MSE/SmoothL1Loss, Cross Entropy is for classification problems, which this is not
+        
+        if isinstance(criterion, nn.MSELoss) == False and isinstance(criterion, nn.SmoothL1Loss) == False:
+            raise ValueError("criterion should be MSE or SmoothL1 Loss types")
+        else:
+            print(f"Using {"MSE Loss" if isinstance(criterion, nn.MSELoss) else "SmoothL1Loss"} as the criterion")
         
         super(LeNet_Cifar10, self).__init__()
         
         self.batch_norm = batch_norm
         self.dropout = dropout
         self.model = LeNet(batch_norm=batch_norm, dropout=dropout).to(device)  # send to cpu/gpu
-        self.criterion = nn.CrossEntropyLoss()
+        self.criterion = criterion
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        
 
     def train(self, x_train, y_train, x_valid, y_valid, batch_size, max_epoch):
         num_samples = x_train.shape[0]
@@ -226,9 +236,9 @@ class LeNet_Cifar10(nn.Module):
         num_valid_batches = (num_valid_samples - 1) // batch_size + 1
 
         x_train = torch.from_numpy(x_train).float()
-        y_train = torch.from_numpy(y_train)
+        y_train = torch.from_numpy(y_train).float()
         x_valid = torch.from_numpy(x_valid).float()
-        y_valid = torch.from_numpy(y_valid)
+        y_valid = torch.from_numpy(y_valid).float()
 
         print('---Run...')
         for epoch in range(1, max_epoch + 1):
@@ -261,8 +271,7 @@ class LeNet_Cifar10(nn.Module):
 
             # To start validation at the end of each epoch.
             self.model.eval()
-            correct = 0
-            total = 0
+            valid_loss = 0.0
             print('Doing validation...', end=' ')
             with torch.no_grad():
                 for i in range(num_valid_batches):
@@ -272,32 +281,62 @@ class LeNet_Cifar10(nn.Module):
                     x_valid_batch = x_valid[start:end].to(device)  # send to cpu/gpu
                     y_valid_batch = y_valid[start:end].to(device)  # send to cpu/gpu
 
+                    # Old Cross Entropy code
+                    # outputs = self.model(x_valid_batch)
+                    # _, predicted = torch.max(outputs.data, 1)
+                    # total += y_valid_batch.shape[0]
+                    # correct += (predicted == y_valid_batch).sum().item()
+                    
+                    # New MSE/SmoothL1 code
                     outputs = self.model(x_valid_batch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    total += y_valid_batch.shape[0]
-                    correct += (predicted == y_valid_batch).sum().item()
+                    loss = self.criterion(outputs, y_valid_batch)
+                    valid_loss += loss.item() * x_valid_batch.shape[0]
 
-            acc = correct / total
-            print('Validation Acc {:.4f}'.format(acc))
+            # Old Cross Entropy code
+            # acc = correct / total
+            # print('Validation Acc {:.4f}'.format(acc))
+            
+            # New MSE/SmoothL1 code
+            avg_valid_loss = valid_loss / num_valid_samples
+            print('Validation Loss {:.6f}'.format(avg_valid_loss))
 
     def test(self, X_test, y_test):
         self.model.eval()
 
-        X_test = torch.from_numpy(X_test).float()
-        y_test = torch.from_numpy(y_test)
-
-        accs = 0
-        for X, y in zip(X_test, y_test):
-            # modified for running on GPU
-            X = X.unsqueeze(0).to(device)  # send to cpu/gpu
-            outputs = self.model(X)        # send to cpu/gpu
-            
-            # original code
-            # outputs = self.model(X.unsqueeze(0))
-            
-            _, predicted = torch.max(outputs.data, 1)
-            accs += (predicted == y).sum().item()
-
-        accuracy = float(accs) / len(y_test)
+        # New MSE/SmoothL1 code
+        X_test = torch.from_numpy(X_test).float().to(device)
+        y_test = torch.from_numpy(y_test).float().to(device)
         
-        return accuracy
+        with torch.no_grad():
+            outputs = self.model(X_test)
+            loss = self.criterion(outputs, y_test)
+            
+        # Mean Absolute Error (MAE) for each control
+        mae = torch.mean(torch.abs(outputs - y_test), dim=0)
+        print('Test MAE (Mean Absolute Error):')
+        print('\tSteering:\t{:.6f}'.format(mae[0].item()))
+        print('\tThrottle:\t{:.6f}'.format(mae[1].item()))
+        print('\tBrake:\t\t{:.6f}'.format(mae[2].item()))
+        overall_mae = torch.mean(torch.abs(outputs - y_test))
+        print('\tOverall:\t{:.6f}'.format(overall_mae.item()))
+        
+        return loss.item()
+
+        # Old Cross Entropy code
+        # X_test = torch.from_numpy(X_test).float()
+        # y_test = torch.from_numpy(y_test)
+        # accs = 0
+        # for X, y in zip(X_test, y_test):
+        #     # modified for running on GPU
+        #     X = X.unsqueeze(0).to(device)  # send to cpu/gpu
+        #     outputs = self.model(X)        # send to cpu/gpu
+            
+        #     # original code
+        #     # outputs = self.model(X.unsqueeze(0))
+            
+        #     _, predicted = torch.max(outputs.data, 1)
+        #     accs += (predicted == y).sum().item()
+
+        # accuracy = float(accs) / len(y_test)
+        
+        # return accuracy

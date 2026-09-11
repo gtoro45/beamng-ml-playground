@@ -1,3 +1,16 @@
+# LeNet model for image classification. This model is derived from the standard
+# architecture implemented here: []
+# The model in this file was modified from the original to serve a driving model
+# for BeamNG.drive, which requires multiple outputs rather than a single softmax
+# selection. Thse outputs are [steering, throttle, brake]. 
+# This model does not solve a classification problem, so Cross Entropy Loss is discarded
+# in favor of MSE/SmoothL1 Loss
+# 
+# The _Speed variation (this model) adds speed as a model input to potential improve 
+# output quality
+# TODO: cleanup model.model junk --> merge both classes
+
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -5,7 +18,7 @@ import numpy as np
 import pickle, tqdm, os
 import time
 
-def preprocess(train_images, test_images, normalize=False):
+def preprocess(train_images, valid_images, test_images, normalize=False):
     '''
     To preprocess the data by 
         (1).Rescaling the pixels from integers in [0,255) to 
@@ -29,6 +42,7 @@ def preprocess(train_images, test_images, normalize=False):
     ### YOUR CODE HERE
     # cast inputs to floats for type safety
     train_images = train_images.astype(np.float64)
+    valid_images = valid_images.astype(np.float64)
     test_images = test_images.astype(np.float64)
     
     # set a small epsilon to avoid div/0
@@ -37,6 +51,7 @@ def preprocess(train_images, test_images, normalize=False):
     # rescale to floats
     if normalize == False:
         train_images = train_images / 255.0
+        valid_images = valid_images / 255.0
         test_images = test_images / 255.0
     
     # normalize with mean and variance
@@ -44,7 +59,12 @@ def preprocess(train_images, test_images, normalize=False):
         # normalize training set
         train_means = np.mean(train_images, axis=(1, 2, 3), keepdims=True) 
         train_var = np.var(train_images, axis=(1, 2, 3), keepdims=True)    
-        train_images = (train_images - train_means) / np.sqrt(train_var + epsilon)    
+        train_images = (train_images - train_means) / np.sqrt(train_var + epsilon)  
+        
+        # normalize validation set
+        valid_means = np.mean(valid_images, axis=(1, 2, 3), keepdims=True) 
+        valid_var = np.var(valid_images, axis=(1, 2, 3), keepdims=True)    
+        valid_images = (valid_images - valid_means) / np.sqrt(valid_var + epsilon)    
         
         # normalize test set
         test_means = np.mean(test_images, axis=(1, 2, 3), keepdims=True)
@@ -52,7 +72,7 @@ def preprocess(train_images, test_images, normalize=False):
         test_images = (test_images - test_means) / np.sqrt(test_var + epsilon)
 
     ### END CODE HERE
-    return train_images, test_images
+    return train_images, valid_images, test_images
 
 
 class LeNet(nn.Module):
@@ -71,7 +91,11 @@ class LeNet(nn.Module):
     Refer to https://pytorch.org/docs/stable/nn.html
     for the instructions for those APIs
     '''
-    def __init__(self, n_classes=None, batch_norm=True, dropout=True):
+    def __init__(self, batch_norm=True, dropout=True):
+        # Modifications:
+        # (1) removal of n_classes argument, we only care about 3: [steering, throttle, brake]
+        # (2) update final layer to have 3 outputs
+        
         super(LeNet, self).__init__()
         '''
         Define each layers of the model in __init__() function
@@ -123,9 +147,9 @@ class LeNet(nn.Module):
         # relu happens here
         self.drop6 = nn.Dropout()
         
-        # n_classes out units; output layer (and related operations)
+        # 3 out units; output layer (and related operations)
         # note: previous fc layer has 84 output --> 84 input
-        self.out = nn.Linear(in_features=84, out_features=n_classes)      
+        self.out = nn.Linear(in_features=84, out_features=3)      
         ### END CODE HERE
     
     def forward(self, x):
@@ -138,7 +162,12 @@ class LeNet(nn.Module):
         Returns:
             logits: Tensor of shape [None, n_classes].
         '''
-
+        
+        # Modifications:
+        # (1) enforce bounding on the 3 outputs: [steering, throttle, brake]
+        # (2) return those bounds
+        
+                
         ### YOUR CODE HERE
         # (1) Convolution (6 out channels) → BN → ReLU →
         x = self.c1(x)
@@ -171,23 +200,36 @@ class LeNet(nn.Module):
         # (7) Outputs (n_classes out units)
         x = self.out(x)
         
+        # (8) bound the outputs to real BeamNG inptus
+        steering = torch.tanh(x[:, 0:1])        # Bound between [-1, 1]: left/right
+        throttle = torch.sigmoid(x[:, 1:2])     # Bound between [0, 1]
+        brake = torch.sigmoid(x[:, 2:3])        # Bound between [0, 1]
+        
         ### END CODE HERE
-        return x
+        return torch.cat([steering, throttle, brake], dim=1)
 
 # switch between CPU and GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 class LeNet_Cifar10(nn.Module):    
-    def __init__(self, n_classes, batch_norm=True, dropout=True):
-
+    def __init__(self, criterion=nn.MSELoss(), batch_norm=True, dropout=True):
+        # Modifications:
+        # (1) remove all n_classes instances
+        # (2) switch to MSE/SmoothL1Loss, Cross Entropy is for classification problems, which this is not
+        
+        if isinstance(criterion, nn.MSELoss) == False and isinstance(criterion, nn.SmoothL1Loss) == False:
+            raise ValueError("criterion should be MSE or SmoothL1 Loss types")
+        else:
+            print(f"Using {"MSE Loss" if isinstance(criterion, nn.MSELoss) else "SmoothL1Loss"} as the criterion")
+        
         super(LeNet_Cifar10, self).__init__()
         
-        self.n_classes = n_classes
         self.batch_norm = batch_norm
         self.dropout = dropout
-        self.model = LeNet(n_classes=n_classes, batch_norm=batch_norm, dropout=dropout).to(device)  # send to cpu/gpu
-        self.criterion = nn.CrossEntropyLoss()
+        self.model = LeNet(batch_norm=batch_norm, dropout=dropout).to(device)  # send to cpu/gpu
+        self.criterion = criterion
         self.optimizer = optim.Adam(self.model.parameters(), lr=0.001)
+        
 
     def train(self, x_train, y_train, x_valid, y_valid, batch_size, max_epoch):
         num_samples = x_train.shape[0]
@@ -197,9 +239,9 @@ class LeNet_Cifar10(nn.Module):
         num_valid_batches = (num_valid_samples - 1) // batch_size + 1
 
         x_train = torch.from_numpy(x_train).float()
-        y_train = torch.from_numpy(y_train)
+        y_train = torch.from_numpy(y_train).float()
         x_valid = torch.from_numpy(x_valid).float()
-        y_valid = torch.from_numpy(y_valid)
+        y_valid = torch.from_numpy(y_valid).float()
 
         print('---Run...')
         for epoch in range(1, max_epoch + 1):
@@ -232,8 +274,7 @@ class LeNet_Cifar10(nn.Module):
 
             # To start validation at the end of each epoch.
             self.model.eval()
-            correct = 0
-            total = 0
+            valid_loss = 0.0
             print('Doing validation...', end=' ')
             with torch.no_grad():
                 for i in range(num_valid_batches):
@@ -243,32 +284,62 @@ class LeNet_Cifar10(nn.Module):
                     x_valid_batch = x_valid[start:end].to(device)  # send to cpu/gpu
                     y_valid_batch = y_valid[start:end].to(device)  # send to cpu/gpu
 
+                    # Old Cross Entropy code
+                    # outputs = self.model(x_valid_batch)
+                    # _, predicted = torch.max(outputs.data, 1)
+                    # total += y_valid_batch.shape[0]
+                    # correct += (predicted == y_valid_batch).sum().item()
+                    
+                    # New MSE/SmoothL1 code
                     outputs = self.model(x_valid_batch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    total += y_valid_batch.shape[0]
-                    correct += (predicted == y_valid_batch).sum().item()
+                    loss = self.criterion(outputs, y_valid_batch)
+                    valid_loss += loss.item() * x_valid_batch.shape[0]
 
-            acc = correct / total
-            print('Validation Acc {:.4f}'.format(acc))
+            # Old Cross Entropy code
+            # acc = correct / total
+            # print('Validation Acc {:.4f}'.format(acc))
+            
+            # New MSE/SmoothL1 code
+            avg_valid_loss = valid_loss / num_valid_samples
+            print('Validation Loss {:.6f}'.format(avg_valid_loss))
 
     def test(self, X_test, y_test):
         self.model.eval()
 
-        X_test = torch.from_numpy(X_test).float()
-        y_test = torch.from_numpy(y_test)
-
-        accs = 0
-        for X, y in zip(X_test, y_test):
-            # modified for running on GPU
-            X = X.unsqueeze(0).to(device)  # send to cpu/gpu
-            outputs = self.model(X)        # send to cpu/gpu
-            
-            # original code
-            # outputs = self.model(X.unsqueeze(0))
-            
-            _, predicted = torch.max(outputs.data, 1)
-            accs += (predicted == y).sum().item()
-
-        accuracy = float(accs) / len(y_test)
+        # New MSE/SmoothL1 code
+        X_test = torch.from_numpy(X_test).float().to(device)
+        y_test = torch.from_numpy(y_test).float().to(device)
         
-        return accuracy
+        with torch.no_grad():
+            outputs = self.model(X_test)
+            loss = self.criterion(outputs, y_test)
+            
+        # Mean Absolute Error (MAE) for each control
+        mae = torch.mean(torch.abs(outputs - y_test), dim=0)
+        print('Test MAE (Mean Absolute Error):')
+        print('\tSteering:\t{:.6f}'.format(mae[0].item()))
+        print('\tThrottle:\t{:.6f}'.format(mae[1].item()))
+        print('\tBrake:\t\t{:.6f}'.format(mae[2].item()))
+        overall_mae = torch.mean(torch.abs(outputs - y_test))
+        print('\tOverall:\t{:.6f}'.format(overall_mae.item()))
+        
+        return loss.item()
+
+        # Old Cross Entropy code
+        # X_test = torch.from_numpy(X_test).float()
+        # y_test = torch.from_numpy(y_test)
+        # accs = 0
+        # for X, y in zip(X_test, y_test):
+        #     # modified for running on GPU
+        #     X = X.unsqueeze(0).to(device)  # send to cpu/gpu
+        #     outputs = self.model(X)        # send to cpu/gpu
+            
+        #     # original code
+        #     # outputs = self.model(X.unsqueeze(0))
+            
+        #     _, predicted = torch.max(outputs.data, 1)
+        #     accs += (predicted == y).sum().item()
+
+        # accuracy = float(accs) / len(y_test)
+        
+        # return accuracy
