@@ -43,7 +43,8 @@ bng.open()
 bng.hide_hud()
 
 # create a scenario
-scenario = Scenario('west_coast_usa', 'example')
+# scenario = Scenario('west_coast_usa', 'example')
+scenario = Scenario('east_coast_usa', 'example')
 
 # spawn a vehicle
 vehicle = Vehicle('ego_vehicle', model='etk800', license='PYTHON')
@@ -53,7 +54,8 @@ electrics = Electrics()
 vehicle.sensors.attach('electrics', electrics)
 
 # add vehicle to scenario at this position and rotation
-scenario.add_vehicle(vehicle, pos=(-717, 101, 118), rot_quat=(0, 0, 0.3826834, 0.9238795))
+# scenario.add_vehicle(vehicle, pos=(-717, 101, 118), rot_quat=(0, 0, 0.3826834, 0.9238795))    # west coast
+scenario.add_vehicle(vehicle, pos=(-426.68, -43.59, 31.11), rot_quat=(0, 0, 1, 0))
 
 # place files defining our scenario for the simulator to read
 scenario.make(bng)
