@@ -13,12 +13,14 @@ import argparse
 import numpy as np
 import pickle
 
+from load_data import view_data
+
 # Force the socket handshake string to match the game engine's expected version
 bng_conn.Connection.PROTOCOL_VERSION = 'v1.26'
 
 ################################## PARSE CLI ARGS ##################################
 parser = argparse.ArgumentParser()
-parser.add_argument('--dims', nargs=2, type=int, help="Dimensions of the captured image for model input (tuple)")
+parser.add_argument('--dims', nargs=2, type=int, help="Dimensions of the captured image for model input (tuple)", required=True)
 args = parser.parse_args()
 DIMS = args.dims
 
@@ -64,6 +66,7 @@ vehicle.ai.set_mode('traffic')
 
 ################################## CAPTURE FUNCTIONS ###################################
 WRITE_QUEUE = queue.Queue()
+DATA_OUTPUT_PATH = "beamng_dataset.pkl"
 
 # find the window coordinates of BeamNG Drive
 def get_beamng_window():
@@ -124,7 +127,7 @@ def writer_thread():
             b'dims': DIMS                        # metadata: (width, height)
         }
         
-        output_path = "beamng_dataset.pkl"
+        output_path = DATA_OUTPUT_PATH
         with open(output_path, 'wb') as file:
             pickle.dump(dataset, file, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Successfully saved {len(data_list)} frames to {output_path}")
@@ -168,5 +171,6 @@ finally:
     WRITE_QUEUE.put(None)   # None kills writer thread loop
     writer.join()
     bng.close()
+    view_data(DATA_OUTPUT_PATH, DIMS)
 
 #####################################################################################
