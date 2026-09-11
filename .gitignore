@@ -1,3 +1,4 @@
 cnn/
 __pycache__/
 *.pkl
+*.pt
