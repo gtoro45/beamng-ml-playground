@@ -1,51 +1,77 @@
 import pickle
 import numpy as np
+import matplotlib.pyplot as plt
 
-def load_data(file_path, val_split=0.1, test_split=0.2, input_dims=None):
+def load_data(file_path, val_split=0.1, test_split=0.2, input_dims=None, use_speed_as_input=False):
     '''
     Loads custom dataset dumped in CIFAR format from a single file and partitions
-    it into train, validation, and test sets.
+    it into train, validation, and test sets. This functions, conceptually, 
+    returns data in {image : label} or {image, speed : label} pairs, depending on 
+    the use_speed_as_input flag
     
     Args:
         file_path: String or Path. Path to the single pickle (.pkl) file.
         val_split: Float. Fraction of the total dataset for validation (e.g., 0.1 for 10%).
         test_split: Float. Fraction of the total dataset for testing (e.g., 0.2 for 20%).
         input_dims: Tuple or List of 2 ints: (width, height). Fallback image
-            dimensions used if metadata is absent.
+                    dimensions used if metadata is absent.
+        use_speed_as_input: Boolean. If True, returns input speed along with images
+                            and excludes speed from targets. If False, returns image 
+                            inputs only.
 
     Returns:
-        x_train, y_train: Arrays of shape [N_train, 3, H, W] and [N_train, 4].
-        x_val, y_val:     Arrays of shape [N_val, 3, H, W] and [N_val, 4].
-        x_test, y_test:   Arrays of shape [N_test, 3, H, W] and [N_test, 4].
+        If use_speed_as_input is False:
+            x_train, y_train: Arrays of shape [N_train, 3, H, W] and [N_train, 3].
+            x_val, y_val:     Arrays of shape [N_val, 3, H, W] and [N_val, 3].
+            x_test, y_test:   Arrays of shape [N_test, 3, H, W] and [N_test, 3].
+            
+        If use_speed_as_input is True:
+            (x_train_img, x_train_speed), y_train: 
+                x_train_img: [N_train, 3, H, W], 
+                x_train_speed: [N_train, 1], 
+                y_train: [N_train, 3]
+            (x_val_img, x_val_speed), y_val:     
+                x_val_img: [N_val, 3, H, W], 
+                x_val_speed: [N_val, 1], 
+                y_val: [N_val, 3]
+            (x_test_img, x_test_speed), y_test:   
+                x_test_img: [N_test, 3, H, W], 
+                x_test_speed: [N_test, 1], 
+                y_test: [N_test, 3]
     '''
     if val_split + test_split >= 1.0:
         raise ValueError("val_split + test_split must sum to less than 1.0")
 
-    with open(file_path, 'rb') as fo: batch = pickle.load(fo, encoding='bytes')
+    with open(file_path, 'rb') as fo: 
+        batch = pickle.load(fo, encoding='bytes')
         
-    x_all = batch[b'data']                      # Shape: (N, 3 * H * W)
-    y_all = batch[b'labels']                    # Shape: (N, 4)
+    x_all = batch[b'data']                                          # Shape: (N, 3 * H * W)
+    telemetry_all = np.array(batch[b'labels'], dtype=np.float32)    # Shape: (N, 4)
     w, h = batch.get(b'dims', input_dims)
     
-    # Reshape planar image format (N, 3, H, W)
-    x_all = np.reshape(x_all, (-1, 3, h, w)).astype(np.uint8)
-    y_all = np.array(y_all, dtype=np.float32)
+    # Reshape images to planar format (N, 3, H, W)
+    x_img_all = np.reshape(x_all, (-1, 3, h, w)).astype(np.uint8)
+    
+    # ALWAYS exclude speed from the output target array 'y'
+    y_all = telemetry_all[:, :3]                                    # Shape: (N, 3) [steer, throttle, brake]
+    speed_all = telemetry_all[:, 3:]                                # Shape: (N, 1) [speed]
     
     # Sequential split boundaries
-    num_samples = x_all.shape[0]
+    num_samples = x_img_all.shape[0]
     train_end = int(num_samples * (1.0 - val_split - test_split))
     val_end = int(num_samples * (1.0 - test_split))
     
     # Slice partitions
-    x_train, y_train = x_all[:train_end], y_all[:train_end]
-    x_val, y_val     = x_all[train_end:val_end], y_all[train_end:val_end]
-    x_test, y_test   = x_all[val_end:], y_all[val_end:]
+    x_tr_img, x_val_img, x_te_img = x_img_all[:train_end], x_img_all[train_end:val_end], x_img_all[val_end:]
+    y_tr, y_val, y_te             = y_all[:train_end], y_all[train_end:val_end], y_all[val_end:]
     
-    return x_train, y_train, x_val, y_val, x_test, y_test
+    if use_speed_as_input:
+        s_tr, s_val, s_te = speed_all[:train_end], speed_all[train_end:val_end], speed_all[val_end:]
+        return (x_tr_img, s_tr), y_tr, (x_val_img, s_val), y_val, (x_te_img, s_te), y_te
+    else:
+        # Standard LeNet mode: returns raw image arrays and sliced targets
+        return x_tr_img, y_tr, x_val_img, y_val, x_te_img, y_te
 
-
-
-import matplotlib.pyplot as plt
 
 def view_data(file_path, input_dims=None):
     '''
