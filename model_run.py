@@ -38,7 +38,8 @@ bng.open()
 bng.hide_hud()
 
 # create a scenario
-scenario = Scenario('west_coast_usa', 'example')
+# scenario = Scenario('west_coast_usa', 'example')
+scenario = Scenario('east_coast_usa', 'example')
 
 # spawn a vehicle
 vehicle = Vehicle('ego_vehicle', model='etk800', license='PYTHON')
@@ -48,7 +49,8 @@ electrics = Electrics()
 vehicle.sensors.attach('electrics', electrics)
 
 # add vehicle to scenario at this position and rotation
-scenario.add_vehicle(vehicle, pos=(-717, 101, 118), rot_quat=(0, 0, 0.3826834, 0.9238795))
+# scenario.add_vehicle(vehicle, pos=(-717, 101, 118), rot_quat=(0, 0, 0.3826834, 0.9238795))    # west coast
+scenario.add_vehicle(vehicle, pos=(-426.68, -43.59, 31.11), rot_quat=(0, 0, 1, 0))
 
 # place files defining our scenario for the simulator to read
 scenario.make(bng)
@@ -90,16 +92,16 @@ bbox = {
 }
 
 # load the model and start the collection loop
-from models.LeNetCifar10 import device, LeNet_Cifar10
+from models.LeNetCifar10_Speed import device, LeNet_Cifar10_Speed
 import torch
 import torch.nn as nn
 
-model = LeNet_Cifar10(
+model = LeNet_Cifar10_Speed(
     criterion=nn.SmoothL1Loss(),
     batch_norm=True,
     dropout=True
 )
-checkpoint = torch.load('model.pt', map_location='cpu')
+checkpoint = torch.load('lenet-speed.pt', map_location='cpu')
 model.model.load_state_dict(checkpoint, strict=True)
 model.model.eval()
 
@@ -115,23 +117,29 @@ try:
             continue
         
         # (1) Prepare model inputs from simulation frame
+        # grab image
         sct_img = sct.grab(bbox)
         img = Image.frombytes("RGB", sct_img.size, sct_img.bgra, "raw", "BGRX")
         res = img.resize(DIMS)
-        
         img_arr = np.array(res, dtype=np.uint8)         # (H, W, 3) (original)
         img_planar = np.transpose(img_arr, (2, 0, 1))   # (3, H, W) (cifar)
         flat_img = img_planar.flatten()                 # flatten to shape 3 * H * W
+        
+        # grab speed
+        vehicle.sensors.poll()
+        speed = electrics['wheelspeed']
         
         # add batch dimension --> becomes (1, 3, H, W)
         # Note: training was with (N, 3, H, W), where N is the number of samples
         #       with batch_norm=True, this was a batch size of 128
         #       with batch_norm=True, this was a batch size of len(data set)
         # For model input, we just have a single frame to process at a time, hence 1
-        input_tensor = torch.from_numpy(img_planar).float().unsqueeze(0).to(device) 
+        input_img_tensor = torch.from_numpy(img_planar).float().unsqueeze(0).to(device) 
+        input_speed_tensor = torch.tensor([[speed]], dtype=torch.float32, device=device)
+        
         
         # (2) Run model prediction
-        with torch.no_grad(): output = model.model(input_tensor)
+        with torch.no_grad(): output = model.model(input_img_tensor, input_speed_tensor)
         steering = output[0, 0].item()  # (0, 0) corresponds to batch index 0, output index 0 (steering)
         throttle = output[0, 1].item()  # (0, 1) corresponds to batch index 0, output index 1 (throttle)
         brake = output[0, 2].item()     # (0, 2) corresponds to batch index 0, output index 2 (brake)

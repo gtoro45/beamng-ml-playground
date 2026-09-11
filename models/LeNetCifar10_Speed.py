@@ -95,6 +95,7 @@ class LeNet(nn.Module):
         # Modifications:
         # (1) removal of n_classes argument, we only care about 3: [steering, throttle, brake]
         # (2) update final layer to have 3 outputs
+        # (3) for speed input, we will concatenate after all conv layers, before the first MLP layer
         
         super(LeNet, self).__init__()
         '''
@@ -134,9 +135,10 @@ class LeNet(nn.Module):
         # reshape happens here
         
         # 120 out units; first fully connected layer (and related operations)
-        # note: previous maxpool layer has a 5x5x16 output --> 400 element input
+        # note: previous maxpool layer has a 5x5x16 output  --> 400 element input
+        # MOD:  adding single element speed input results   --> 400 + 1 = 401 element input
         # note: data will have been flattened between pooling and this layer for 1D BN
-        self.fc5 = nn.Linear(in_features=400, out_features=120)      
+        self.fc5 = nn.Linear(in_features=401, out_features=120)      
         self.bn5 = nn.BatchNorm1d(num_features=120)
         # relu happens here
         
@@ -152,11 +154,12 @@ class LeNet(nn.Module):
         self.out = nn.Linear(in_features=84, out_features=3)      
         ### END CODE HERE
     
-    def forward(self, x):
+    def forward(self, x, speed):
         '''
         Run forward pass of the model defined in the above __init__() function
         Args:
-            x: Tensor of shape [None, 3, 32, 32]
+            x: Tensor of shape [N, 3, 32, 32]   (images)
+            speed: Tensor of shape [N, 1]       (speed)
             for input images.
 
         Returns:
@@ -182,9 +185,10 @@ class LeNet(nn.Module):
         if self.batch_norm: x = self.bn3(x)
         x = self.relu(x)
         
-        # (4) Max Pooling → Reshape to vector →
+        # (4) Max Pooling → Reshape to vector → Add speed input →
         x = self.mp4(x)
-        x = x.view(x.size(0), -1)
+        x = x.view(x.size(0), -1)           # Shape: (batch_size, 400) 
+        x = torch.cat([x, speed], dim=1)    # Shape: (batch_size, 401)  [MOD]
         
         # (5) Fully-connected (120 out units) → BN → ReLU →
         x = self.fc5(x)
@@ -211,7 +215,7 @@ class LeNet(nn.Module):
 # switch between CPU and GPU
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-class LeNet_Cifar10(nn.Module):    
+class LeNet_Cifar10_Speed(nn.Module):    
     def __init__(self, criterion=nn.MSELoss(), batch_norm=True, dropout=True):
         # Modifications:
         # (1) remove all n_classes instances
@@ -222,7 +226,7 @@ class LeNet_Cifar10(nn.Module):
         else:
             print(f"Using {"MSE Loss" if isinstance(criterion, nn.MSELoss) else "SmoothL1Loss"} as the criterion")
         
-        super(LeNet_Cifar10, self).__init__()
+        super(LeNet_Cifar10_Speed, self).__init__()
         
         self.batch_norm = batch_norm
         self.dropout = dropout
@@ -232,38 +236,59 @@ class LeNet_Cifar10(nn.Module):
         
 
     def train(self, x_train, y_train, x_valid, y_valid, batch_size, max_epoch):
-        num_samples = x_train.shape[0]
+        # Standard LeNet training code
+        # num_samples = x_train.shape[0]
+        # num_batches = int(num_samples / batch_size)
+
+        # num_valid_samples = x_valid.shape[0]
+        # num_valid_batches = (num_valid_samples - 1) // batch_size + 1
+
+        # x_train = torch.from_numpy(x_train).float()
+        # y_train = torch.from_numpy(y_train).float()
+        # x_valid = torch.from_numpy(x_valid).float()
+        # y_valid = torch.from_numpy(y_valid).float()
+        
+        # Decouple the image and speed inputs
+        x_train_img, x_train_speed = x_train
+        x_valid_img, x_valid_speed = x_valid 
+        
+        num_samples = x_train_img.shape[0]
         num_batches = int(num_samples / batch_size)
-
-        num_valid_samples = x_valid.shape[0]
+        num_valid_samples = x_valid_img.shape[0]
         num_valid_batches = (num_valid_samples - 1) // batch_size + 1
-
-        x_train = torch.from_numpy(x_train).float()
+        
+        x_train_img = torch.from_numpy(x_train_img).float()
+        x_train_speed = torch.from_numpy(x_train_speed).float()
         y_train = torch.from_numpy(y_train).float()
-        x_valid = torch.from_numpy(x_valid).float()
+        
+        x_valid_img = torch.from_numpy(x_valid_img).float()
+        x_valid_speed = torch.from_numpy(x_valid_speed).float()
         y_valid = torch.from_numpy(y_valid).float()
-
+        
+        
+        # Add decoupled inputs and labels to training loop
         print('---Run...')
         for epoch in range(1, max_epoch + 1):
             self.model.train()
             # To shuffle the data at the beginning of each epoch.
             shuffle_index = np.random.permutation(num_samples)
-            curr_x_train = x_train[shuffle_index]
+            curr_x_train_img = x_train_img[shuffle_index]
+            curr_x_train_speed = x_train_speed[shuffle_index]
             curr_y_train = y_train[shuffle_index]
 
             # To start training at current epoch.
-            loss_value = []
             qbar = tqdm.tqdm(range(num_batches))
             for i in qbar:
                 batch_start_time = time.time()
 
                 start = batch_size * i
                 end = batch_size * (i + 1)
-                x_batch = curr_x_train[start:end].to(device)  # send to cpu/gpu
-                y_batch = curr_y_train[start:end].to(device)  # send to cpu/gpu
+                x_batch = curr_x_train_img[start:end].to(device)        # send to cpu/gpu
+                speed_batch = curr_x_train_speed[start:end].to(device)  # send to cpu/gpu
+                y_batch = curr_y_train[start:end].to(device)            # send to cpu/gpu
 
                 self.optimizer.zero_grad()
-                outputs = self.model(x_batch)
+                outputs = self.model(x_batch, speed_batch)              # Add speed as input
                 loss = self.criterion(outputs, y_batch)
                 loss.backward()
                 self.optimizer.step()
@@ -280,18 +305,19 @@ class LeNet_Cifar10(nn.Module):
                 for i in range(num_valid_batches):
 
                     start = batch_size * i
-                    end = min(batch_size * (i + 1), x_valid.shape[0])
-                    x_valid_batch = x_valid[start:end].to(device)  # send to cpu/gpu
-                    y_valid_batch = y_valid[start:end].to(device)  # send to cpu/gpu
+                    end = min(batch_size * (i + 1), num_valid_samples)
+                    x_valid_batch = x_valid_img[start:end].to(device)         # send to cpu/gpu
+                    speed_valid_batch = x_valid_speed[start:end].to(device)   # send to cpu/gpu
+                    y_valid_batch = y_valid[start:end].to(device)             # send to cpu/gpu
 
                     # Old Cross Entropy code
                     # outputs = self.model(x_valid_batch)
                     # _, predicted = torch.max(outputs.data, 1)
                     # total += y_valid_batch.shape[0]
                     # correct += (predicted == y_valid_batch).sum().item()
-                    
+
                     # New MSE/SmoothL1 code
-                    outputs = self.model(x_valid_batch)
+                    outputs = self.model(x_valid_batch, speed_valid_batch)
                     loss = self.criterion(outputs, y_valid_batch)
                     valid_loss += loss.item() * x_valid_batch.shape[0]
 
@@ -307,11 +333,13 @@ class LeNet_Cifar10(nn.Module):
         self.model.eval()
 
         # New MSE/SmoothL1 code
-        X_test = torch.from_numpy(X_test).float().to(device)
+        X_test_img, X_test_speed = X_test
+        X_test_img = torch.from_numpy(X_test_img).float().to(device)
+        X_test_speed = torch.from_numpy(X_test_speed).float().to(device)
         y_test = torch.from_numpy(y_test).float().to(device)
         
         with torch.no_grad():
-            outputs = self.model(X_test)
+            outputs = self.model(X_test_img, X_test_speed)
             loss = self.criterion(outputs, y_test)
             
         # Mean Absolute Error (MAE) for each control
