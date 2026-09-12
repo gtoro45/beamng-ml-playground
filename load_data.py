@@ -2,7 +2,14 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 
-def load_data(file_path, val_split=0.1, test_split=0.2, input_dims=None, use_speed_as_input=False):
+def load_data(
+            file_path, 
+            val_split=0.1, 
+            test_split=0.2, 
+            input_dims=None, 
+            use_speed_as_input=False,
+            stack_size=1
+        ):
     '''
     Loads custom dataset dumped in CIFAR format from a single file and partitions
     it into train, validation, and test sets. This functions, conceptually, 
