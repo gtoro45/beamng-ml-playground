@@ -206,8 +206,11 @@ class LeNet(nn.Module):
         return torch.cat([steering, throttle, brake], dim=1)
 
 # switch between CPU and GPU
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+device = torch.device(
+    "cuda" if torch.cuda.is_available() 
+    else "mps" if torch.mps.is_available()
+    else "cpu"
+)
 class LeNet_Cifar10(nn.Module):    
     def __init__(self, criterion=nn.MSELoss(), batch_norm=True, dropout=True):
         # Modifications:
